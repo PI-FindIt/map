@@ -172,3 +172,14 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Ides
+.idea/
+
+# Pdf
+*.pdf
+
+# Test folder
+
+test/
+
