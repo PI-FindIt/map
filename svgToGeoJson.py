@@ -6,69 +6,120 @@ from pathlib import Path
 
 
 def parse_svg(svg_content):
-    """Parse SVG content and extract all graphical elements with their points"""
+    """Parse SVG content and extract path and rect elements with their points and styles"""
     doc = minidom.parseString(svg_content)
     elements = []
-
-    # Handle lines
-    lines = doc.getElementsByTagName('line')
-    for line in lines:
-        x1 = float(line.getAttribute('x1')) if line.hasAttribute('x1') else 0
-        y1 = float(line.getAttribute('y1')) if line.hasAttribute('y1') else 0
-        x2 = float(line.getAttribute('x2')) if line.hasAttribute('x2') else 0
-        y2 = float(line.getAttribute('y2')) if line.hasAttribute('y2') else 0
-        elements.append({
-            'type': 'line',
-            'points': [(x1, y1), (x2, y2)]
-        })
 
     # Handle paths
     paths = doc.getElementsByTagName('path')
     for path in paths:
         d = path.getAttribute('d')
+        style = path.getAttribute('style')
+        fill = path.getAttribute('fill')
+        stroke = path.getAttribute('stroke')
+        stroke_width = path.getAttribute('stroke-width')
+
+        # Parse style attribute if present
+        style_dict = {}
+        if style:
+            for prop in style.split(';'):
+                if ':' in prop:
+                    key, value = prop.split(':', 1)
+                    style_dict[key.strip()] = value.strip()
+
+        # Get attributes from style or direct attributes, with defaults
+        final_fill = style_dict.get('fill', fill) or 'none'
+        final_stroke = style_dict.get('stroke', stroke) or 'none'
+        final_stroke_width = style_dict.get('stroke-width', stroke_width) or '1'
+
         points = []
-        path_points = re.findall(r'([MLVH])\s*([-\d.]+)\s*([-\d.]*)|([mlvh])\s*([-\d.]+)\s*([-\d.]*)', d)
         current_pos = [0, 0]
+        subpaths = []  # To store separate subpaths
 
-        for cmd in path_points:
-            # Handle both uppercase (absolute) and lowercase (relative) commands
-            if cmd[0]:  # Uppercase command
-                c, x, y = cmd[0], cmd[1], cmd[2]
-            else:  # Lowercase command
-                c, x, y = cmd[3], cmd[4], cmd[5]
+        # Split the path data into commands
+        commands = re.findall(r'([MLHVCSQTAZmlhvcsqtaz])\s*([^MLHVCSQTAZmlhvcsqtaz]*)', d)
 
-            if not x:
-                continue
+        for cmd in commands:
+            command = cmd[0].upper()
+            params = list(map(float, re.findall(r'[-+]?\d*\.?\d+', cmd[1])))
 
-            x = float(x)
-            y = float(y) if y else 0
-
-            if c in ['M', 'L', 'm', 'l']:
-                if c.islower():  # Relative
-                    current_pos[0] += x
-                    current_pos[1] += y
-                else:  # Absolute
+            if command == 'M':  # Move to (absolute)
+                for i in range(0, len(params), 2):
+                    current_pos = [params[i], params[i + 1]]
+                    points.append(tuple(current_pos))
+            elif command == 'L':  # Line to (absolute)
+                for i in range(0, len(params), 2):
+                    current_pos = [params[i], params[i + 1]]
+                    points.append(tuple(current_pos))
+            elif command == 'H':  # Horizontal line (absolute)
+                for x in params:
                     current_pos[0] = x
+                    points.append(tuple(current_pos))
+            elif command == 'V':  # Vertical line (absolute)
+                for y in params:
                     current_pos[1] = y
-                points.append(tuple(current_pos))
-            elif c in ['V', 'v']:  # Vertical line
-                if c.islower():  # Relative
-                    current_pos[1] += x
-                else:  # Absolute
-                    current_pos[1] = x
-                points.append(tuple(current_pos))
-            elif c in ['H', 'h']:  # Horizontal line
-                if c.islower():  # Relative
-                    current_pos[0] += x
-                else:  # Absolute
-                    current_pos[0] = x
-                points.append(tuple(current_pos))
+                    points.append(tuple(current_pos))
+            elif command == 'Z':  # Close path
+                if points and points[0] != points[-1]:
+                    points.append(points[0])  # Close the polygon
+                if points:
+                    subpaths.append(points)
+                    points = []
 
+        # Add any remaining points that weren't closed with Z
         if points:
+            subpaths.append(points)
+
+        if subpaths:
             elements.append({
                 'type': 'path',
-                'points': points
+                'subpaths': subpaths,
+                'fill': final_fill,
+                'stroke': final_stroke,
+                'stroke_width': final_stroke_width
             })
+
+    # Handle rectangles
+    rects = doc.getElementsByTagName('rect')
+    for rect in rects:
+        x = float(rect.getAttribute('x'))
+        y = float(rect.getAttribute('y'))
+        width = float(rect.getAttribute('width'))
+        height = float(rect.getAttribute('height'))
+        style = rect.getAttribute('style')
+        fill = rect.getAttribute('fill')
+        stroke = rect.getAttribute('stroke')
+        stroke_width = rect.getAttribute('stroke-width')
+
+        # Parse style attribute if present
+        style_dict = {}
+        if style:
+            for prop in style.split(';'):
+                if ':' in prop:
+                    key, value = prop.split(':', 1)
+                    style_dict[key.strip()] = value.strip()
+
+        # Get attributes from style or direct attributes, with defaults
+        final_fill = style_dict.get('fill', fill) or 'none'
+        final_stroke = style_dict.get('stroke', stroke) or 'none'
+        final_stroke_width = style_dict.get('stroke-width', stroke_width) or '1'
+
+        # Create rectangle as a polygon path
+        points = [
+            (x, y),
+            (x + width, y),
+            (x + width, y + height),
+            (x, y + height),
+            (x, y)  # Close the rectangle
+        ]
+
+        elements.append({
+            'type': 'rect',
+            'subpaths': [points],
+            'fill': final_fill,
+            'stroke': final_stroke,
+            'stroke_width': final_stroke_width
+        })
 
     doc.unlink()
     return elements
@@ -78,7 +129,8 @@ def calculate_bounds(elements):
     """Calculate min and max coordinates from all elements"""
     all_points = []
     for element in elements:
-        all_points.extend(element['points'])
+        for subpath in element.get('subpaths', []):
+            all_points.extend(subpath)
 
     if not all_points:
         return None
@@ -127,7 +179,7 @@ def georeference_points(points, svg_bounds, geo_bounds):
 def main():
     # Set up a command line argument parser
     parser = argparse.ArgumentParser(
-        description='Georeference SVG using GeoJSON control points while preserving line connections',
+        description='Georeference SVG using GeoJSON control points and extract polygons',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('svg_file', type=str, help='Path to SVG file to georeference')
@@ -166,37 +218,36 @@ def main():
 
         if not geo_points:
             raise ValueError("No Point features found in GeoJSON file")
-        geo_bounds = calculate_bounds([{'points': geo_points}])
+        geo_bounds = calculate_bounds([{'subpaths': [geo_points]}])
 
-        # Create GeoJSON output with LineString features
+        # Create GeoJSON output with Polygon features
         features = []
         for i, element in enumerate(svg_elements):
-            geo_points = georeference_points(element['points'], svg_bounds, geo_bounds)
+            for j, subpath in enumerate(element.get('subpaths', [])):
+                if len(subpath) < 3:  # Need at least 3 points for a polygon
+                    continue
 
-            if len(geo_points) < 2:
-                # For single-point elements, create a Point feature instead
+                geo_points = georeference_points(subpath, svg_bounds, geo_bounds)
+
+                # Ensure the polygon is closed
+                if geo_points[0] != geo_points[-1]:
+                    geo_points.append(geo_points[0])
+
+                properties = {
+                    "id": f"{i}-{j}",
+                    "element_type": element['type'],
+                    "fill": element.get('fill', 'none'),
+                    "stroke": element.get('stroke', 'none'),
+                    "stroke_width": element.get('stroke_width', '1')
+                }
+
                 features.append({
                     "type": "Feature",
                     "geometry": {
-                        "type": "Point",
-                        "coordinates": geo_points[0]
+                        "type": "Polygon",
+                        "coordinates": [geo_points]
                     },
-                    "properties": {
-                        "id": i,
-                        "element_type": element['type'],
-                        "original_points": element['points']
-                    }
-                })
-            else:
-                features.append({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": geo_points
-                    },
-                    "properties": {
-                        "id": i
-                    }
+                    "properties": properties
                 })
 
         result = {
@@ -211,7 +262,7 @@ def main():
         # Write an output file
         output_path = Path(args.output)
         output_path.write_text(json.dumps(result, indent=2))
-        print(f"Successfully georeferenced {len(features)} elements to {output_path}")
+        print(f"Successfully georeferenced {len(features)} polygons to {output_path}")
 
     except Exception as e:
         print(f"Error: {str(e)}")
