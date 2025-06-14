@@ -60,7 +60,7 @@ def generate_grid_lines(polygon_utm, N):
     return horizontal_lines + vertical_lines
 
 def main():
-    polygon = load_polygon('ideia_louca_da_vi.geojson')
+    polygon = load_polygon('path_tests/ideia_louca_da_vi.geojson')
     polygon_utm, transformer, utm_proj = project_to_utm(polygon)
     reverse_transformer = Transformer.from_proj(utm_proj, Proj('epsg:4326'), always_xy=True)
     edges = generate_grid_lines(polygon_utm, N)
@@ -107,7 +107,7 @@ def main():
         "features": features
     }
 
-    with open('closestPoint.geojson', 'w') as f:
+    with open('path_tests/closestPoint.geojson', 'w') as f:
         json.dump(geojson, f, indent=2)
 
 if __name__ == "__main__":
